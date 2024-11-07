@@ -1,10 +1,12 @@
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Depends
 import requests
 from bs4 import BeautifulSoup
 import os
 from dotenv import load_dotenv
 import logging
 import secrets
+from fastapi import Response
+from fastapi.responses import JSONResponse
 
 # Configure logging
 logging.basicConfig(
@@ -22,21 +24,29 @@ logging.info(f"Generated API key: Bearer {API_KEY}")
 
 app = FastAPI()
 
-@app.middleware("http")
-async def auth_middleware(request: Request, call_next):
-    if request.method == "GET":
-        raise HTTPException(status_code=405, detail="GET requests are not allowed")
-    
-    # Check for Bearer token
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    logging.warning(f"HTTP {exc.status_code} error: {exc.detail} - Request: {request.url.path}")
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail}
+    )
+
+# Replace the middleware with a more specific route handler
+@app.api_route("/{path:path}", methods=["GET"])
+async def block_get_requests(path: str):
+    raise HTTPException(status_code=405, detail="GET requests are not allowed")
+
+# Move the auth check to a dependency instead of middleware
+async def verify_token(request: Request):
     auth_header = request.headers.get("Authorization")
     if not auth_header or not auth_header.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing or invalid Bearer token")
     
-    token = auth_header.split(" ")[1]
+    token = auth_header.split("Bearer ")[1]
     if token != API_KEY:
         raise HTTPException(status_code=401, detail="Invalid Bearer token")
-    
-    return await call_next(request)
+    return token
 
 PRODUCT_URL = "https://direct.playstation.com/nl-nl/buy-accessories/disc-drive-for-ps5-digital-edition-consoles"
 OUT_OF_STOCK_TEXT = "Momenteel niet beschikbaar"
@@ -66,7 +76,7 @@ def check_availability():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/webhook/check-ps5-disc-drive")
+@app.post("/webhook/check-ps5-disc-drive", dependencies=[Depends(verify_token)])
 async def webhook_endpoint():
     result = check_availability()
     
